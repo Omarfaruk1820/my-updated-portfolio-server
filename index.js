@@ -8,7 +8,7 @@ import skillRoutes from "./routes/skill.routes.js";
 import serviceRoutes from "./routes/service.routes.js";
 import experienceRoutes from "./routes/experience.routes.js";
 import educationRoutes from "./routes/education.routes.js";
-import testimonialRoutes from "./routes/testimonial.routes.js";
+// import testimonialRoutes from "./routes/testimonial.routes.js";
 import contactRoutes from "./routes/contact.routes.js";
 
 const app = express();
@@ -41,7 +41,7 @@ app.use("/api/skills", skillRoutes);
 app.use("/api/services", serviceRoutes);
 app.use("/api/experiences", experienceRoutes);
 app.use("/api/education", educationRoutes);
-app.use("/api/testimonials", testimonialRoutes);
+// app.use("/api/testimonials", testimonialRoutes);
 app.use("/api/contact", contactRoutes);
 
 // 404 Handler
