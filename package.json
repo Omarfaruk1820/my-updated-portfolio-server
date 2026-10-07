@@ -1,0 +1,30 @@
+{
+  "name": "portfilio-server",
+  "version": "1.0.0",
+  "description": "Backend server for Omar Faruk's portfolio website",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon --exec \"node --env-file=.env index.js\"",
+    "start": "node --env-file=.env index.js"
+  },
+  "keywords": [
+    "portfolio",
+    "mern",
+    "node",
+    "express",
+    "mongodb"
+  ],
+  "author": "Omar Faruk",
+  "license": "ISC",
+  "dependencies": {
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.6",
+    "express": "^5.2.1",
+    "mongodb": "^7.7.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}
