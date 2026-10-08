@@ -1,6 +1,9 @@
 # Dependencies
 node_modules/
 
+serviceaccounts.json
+serviceaccounts*.json
+
 # Environment variables
 .env
 .env.*

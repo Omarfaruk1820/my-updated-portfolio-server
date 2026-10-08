@@ -12,6 +12,7 @@ import experienceRoutes from "./routes/experience.routes.js";
 import educationRoutes from "./routes/education.routes.js";
 // import testimonialRoutes from "./routes/testimonial.routes.js";
 import contactRoutes from "./routes/contact.routes.js";
+import authRoutes from "./routes/auth.routes.js";
 
 const app = express();
 
@@ -80,6 +81,8 @@ app.use("/api/education", educationRoutes);
 // app.use("/api/testimonials", testimonialRoutes);
 
 app.use("/api/contact", contactRoutes);
+
+app.use("/api/auth", authRoutes);
 
 /* =========================================================
    404 HANDLER
