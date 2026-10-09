@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "nodemon --exec \"node --env-file=.env index.js\"",
-    "start": "node --env-file=.env index.js",
+     "start": "node index.js",
     "seed:skills": "node --env-file=.env seed/seedSkills.js",
     "seed:projects": "node --env-file=.env seed/projects.seed.js",
     "seed:services": "node --env-file=.env seed/services.seed.js"
