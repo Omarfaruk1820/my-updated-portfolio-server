@@ -330,10 +330,7 @@ router.patch("/:id", verifyToken, requireAdmin, async (req, res) => {
   }
 });
 
-// ============================================================
-// DELETE /api/contact/:id
-// Admin only: Delete a contact message
-// ============================================================
+
 router.delete("/:id", verifyToken, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
