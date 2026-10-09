@@ -48,7 +48,7 @@ const projects = [
     description:
       "A responsive e-commerce website for browsing and purchasing biscuit products with a clean and user-friendly shopping experience.",
 
-    image: "",
+    image: "https://i.ibb.co.com/tPWpkxPb/he-junhui-r-SGjpaj-BLNU-unsplash.jpg",
 
     category: "E-Commerce",
 
