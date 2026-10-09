@@ -2,63 +2,152 @@ import express from "express";
 import { ObjectId } from "mongodb";
 
 import { getDB } from "../config/db.js";
+import verifyToken from "../middleware/verifyToken.js";
+import requireAdmin from "../middleware/requireAdmin.js";
 
 const router = express.Router();
 
 const COLLECTION_NAME = "services";
+const ALLOWED_STATUS = ["published", "draft", "archived"];
+
+const MAX_TITLE_LENGTH = 150;
+const MAX_SLUG_LENGTH = 160;
+const MAX_SHORT_DESCRIPTION_LENGTH = 300;
+const MAX_DESCRIPTION_LENGTH = 20000;
+const MAX_ICON_LENGTH = 100;
+const MAX_ARRAY_ITEMS = 50;
+const MAX_ARRAY_ITEM_LENGTH = 200;
+
+/* =========================================================
+   COLLECTION
+========================================================= */
+
+const getServicesCollection = () => {
+  return getDB().collection(COLLECTION_NAME);
+};
 
 /* =========================================================
    HELPERS
 ========================================================= */
 
-const getServicesCollection = () => {
-  const db = getDB();
-
-  return db.collection(COLLECTION_NAME);
+const normalizeString = (value) => {
+  return typeof value === "string" ? value.trim() : "";
 };
 
-const isValidObjectId = (id) => {
-  return ObjectId.isValid(id);
+const normalizeSlug = (value) => {
+  return normalizeString(value).toLowerCase();
+};
+
+const isValidSlug = (value) => {
+  return (
+    typeof value === "string" &&
+    value.length <= MAX_SLUG_LENGTH &&
+    /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value)
+  );
+};
+
+const isValidObjectId = (value) => {
+  return (
+    typeof value === "string" &&
+    /^[a-fA-F0-9]{24}$/.test(value) &&
+    ObjectId.isValid(value)
+  );
+};
+
+const isPlainObject = (value) => {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+};
+
+const validateStringArray = (value) => {
+  return (
+    Array.isArray(value) &&
+    value.length <= MAX_ARRAY_ITEMS &&
+    value.every(
+      (item) =>
+        typeof item === "string" && item.trim().length <= MAX_ARRAY_ITEM_LENGTH,
+    )
+  );
+};
+
+const normalizeStringArray = (value) => {
+  return value.map((item) => item.trim()).filter(Boolean);
+};
+
+const parseBoolean = (value) => {
+  return typeof value === "boolean" ? value : null;
+};
+
+const parseOrder = (value) => {
+  if (
+    typeof value !== "number" &&
+    !(typeof value === "string" && value.trim() !== "")
+  ) {
+    return null;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    return null;
+  }
+
+  return parsed;
+};
+
+const sendValidationError = (res, message) => {
+  return res.status(400).json({
+    success: false,
+    message,
+  });
+};
+
+const handleServiceError = (res, error, operation) => {
+  console.error(`❌ ${operation} error:`, error);
+
+  if (error?.code === 11000) {
+    return res.status(409).json({
+      success: false,
+      message: "A service with this slug already exists.",
+    });
+  }
+
+  return res.status(500).json({
+    success: false,
+    message: `Failed to ${operation.toLowerCase()}.`,
+  });
 };
 
 /* =========================================================
-   GET ALL SERVICES
+   GET ALL PUBLISHED SERVICES
    GET /api/services
+   Public route
 ========================================================= */
 
 router.get("/", async (req, res) => {
   try {
-    const collection = getServicesCollection();
-
-    const services = await collection
-      .find({
-        status: "published",
-      })
+    const services = await getServicesCollection()
+      .find({ status: "published" })
       .sort({
         order: 1,
         createdAt: -1,
       })
       .toArray();
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: "Services fetched successfully.",
       count: services.length,
       data: services,
     });
   } catch (error) {
-    console.error("❌ Get services error:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to fetch services.",
-    });
+    return handleServiceError(res, error, "Fetch services");
   }
 });
 
 /* =========================================================
-   GET SINGLE SERVICE
+   GET SINGLE PUBLISHED SERVICE
    GET /api/services/:id
+   Public route
 ========================================================= */
 
 router.get("/:id", async (req, res) => {
@@ -66,15 +155,10 @@ router.get("/:id", async (req, res) => {
     const { id } = req.params;
 
     if (!isValidObjectId(id)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid service ID.",
-      });
+      return sendValidationError(res, "Invalid service ID.");
     }
 
-    const collection = getServicesCollection();
-
-    const service = await collection.findOne({
+    const service = await getServicesCollection().findOne({
       _id: new ObjectId(id),
       status: "published",
     });
@@ -86,28 +170,28 @@ router.get("/:id", async (req, res) => {
       });
     }
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: "Service fetched successfully.",
       data: service,
     });
   } catch (error) {
-    console.error("❌ Get service error:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to fetch service.",
-    });
+    return handleServiceError(res, error, "Fetch service");
   }
 });
 
 /* =========================================================
    CREATE SERVICE
    POST /api/services
+   Admin only
 ========================================================= */
 
-router.post("/", async (req, res) => {
+router.post("/", verifyToken, requireAdmin, async (req, res) => {
   try {
+    if (!isPlainObject(req.body)) {
+      return sendValidationError(res, "A valid service object is required.");
+    }
+
     const {
       title,
       slug,
@@ -121,67 +205,123 @@ router.post("/", async (req, res) => {
       status,
     } = req.body;
 
-    /* -----------------------------------------------------
-       REQUIRED FIELD VALIDATION
-    ----------------------------------------------------- */
+    const normalizedTitle = normalizeString(title);
+    const normalizedSlug = normalizeSlug(slug);
+    const normalizedShortDescription = normalizeString(shortDescription);
+    const normalizedDescription = normalizeString(description);
 
-    if (!title?.trim()) {
-      return res.status(400).json({
-        success: false,
-        message: "Service title is required.",
-      });
+    /* REQUIRED FIELDS */
+
+    if (
+      !normalizedTitle ||
+      !normalizedSlug ||
+      !normalizedShortDescription ||
+      !normalizedDescription
+    ) {
+      return sendValidationError(
+        res,
+        "Title, slug, shortDescription, and description are required.",
+      );
     }
 
-    if (!slug?.trim()) {
-      return res.status(400).json({
-        success: false,
-        message: "Service slug is required.",
-      });
+    if (normalizedTitle.length > MAX_TITLE_LENGTH) {
+      return sendValidationError(
+        res,
+        `Title cannot exceed ${MAX_TITLE_LENGTH} characters.`,
+      );
     }
 
-    if (!shortDescription?.trim()) {
-      return res.status(400).json({
-        success: false,
-        message: "Short description is required.",
-      });
+    if (!isValidSlug(normalizedSlug)) {
+      return sendValidationError(
+        res,
+        "Slug must contain lowercase letters, numbers, and single hyphens only.",
+      );
     }
 
-    if (!description?.trim()) {
-      return res.status(400).json({
-        success: false,
-        message: "Service description is required.",
-      });
+    if (normalizedShortDescription.length > MAX_SHORT_DESCRIPTION_LENGTH) {
+      return sendValidationError(
+        res,
+        `Short description cannot exceed ${MAX_SHORT_DESCRIPTION_LENGTH} characters.`,
+      );
     }
 
-    /* -----------------------------------------------------
-       TYPE VALIDATION
-    ----------------------------------------------------- */
-
-    if (features !== undefined && !Array.isArray(features)) {
-      return res.status(400).json({
-        success: false,
-        message: "Features must be an array.",
-      });
+    if (normalizedDescription.length > MAX_DESCRIPTION_LENGTH) {
+      return sendValidationError(
+        res,
+        `Description cannot exceed ${MAX_DESCRIPTION_LENGTH} characters.`,
+      );
     }
 
-    if (technologies !== undefined && !Array.isArray(technologies)) {
-      return res.status(400).json({
-        success: false,
-        message: "Technologies must be an array.",
-      });
+    /* ICON */
+
+    if (typeof icon !== "undefined" && typeof icon !== "string") {
+      return sendValidationError(res, "Icon must be a string.");
     }
 
-    /* -----------------------------------------------------
-       NORMALIZE DATA
-    ----------------------------------------------------- */
+    const normalizedIcon = normalizeString(icon) || "FiLayers";
 
-    const normalizedSlug = slug.trim().toLowerCase().replace(/\s+/g, "-");
+    if (normalizedIcon.length > MAX_ICON_LENGTH) {
+      return sendValidationError(
+        res,
+        `Icon cannot exceed ${MAX_ICON_LENGTH} characters.`,
+      );
+    }
+
+    /* ARRAY FIELDS */
+
+    if (typeof features !== "undefined" && !validateStringArray(features)) {
+      return sendValidationError(
+        res,
+        "Features must be an array of valid strings.",
+      );
+    }
+
+    if (
+      typeof technologies !== "undefined" &&
+      !validateStringArray(technologies)
+    ) {
+      return sendValidationError(
+        res,
+        "Technologies must be an array of valid strings.",
+      );
+    }
+
+    /* BOOLEAN */
+
+    const normalizedFeatured =
+      typeof featured === "undefined" ? false : parseBoolean(featured);
+
+    if (normalizedFeatured === null) {
+      return sendValidationError(res, "Featured must be a boolean value.");
+    }
+
+    /* ORDER */
+
+    const normalizedOrder =
+      typeof order === "undefined" ? 0 : parseOrder(order);
+
+    if (normalizedOrder === null) {
+      return sendValidationError(
+        res,
+        "Order must be a non-negative safe integer.",
+      );
+    }
+
+    /* STATUS */
+
+    const normalizedStatus =
+      typeof status === "undefined" ? "published" : status;
+
+    if (!ALLOWED_STATUS.includes(normalizedStatus)) {
+      return sendValidationError(
+        res,
+        "Status must be published, draft, or archived.",
+      );
+    }
+
+    /* DUPLICATE SLUG CHECK */
 
     const collection = getServicesCollection();
-
-    /* -----------------------------------------------------
-       DUPLICATE SLUG CHECK
-    ----------------------------------------------------- */
 
     const existingService = await collection.findOne({
       slug: normalizedSlug,
@@ -194,84 +334,56 @@ router.post("/", async (req, res) => {
       });
     }
 
-    /* -----------------------------------------------------
-       CREATE SERVICE DOCUMENT
-    ----------------------------------------------------- */
+    /* CREATE DOCUMENT */
 
     const now = new Date();
 
     const service = {
-      title: title.trim(),
-
+      title: normalizedTitle,
       slug: normalizedSlug,
-
-      shortDescription: shortDescription.trim(),
-
-      description: description.trim(),
-
-      icon: typeof icon === "string" ? icon.trim() : "FiLayers",
-
-      features: Array.isArray(features)
-        ? features
-            .filter((item) => typeof item === "string")
-            .map((item) => item.trim())
-            .filter(Boolean)
-        : [],
-
-      technologies: Array.isArray(technologies)
-        ? technologies
-            .filter((item) => typeof item === "string")
-            .map((item) => item.trim())
-            .filter(Boolean)
-        : [],
-
-      featured: Boolean(featured),
-
-      order: Number.isFinite(Number(order)) ? Number(order) : 0,
-
-      status:
-        status === "draft" || status === "archived" ? status : "published",
-
+      shortDescription: normalizedShortDescription,
+      description: normalizedDescription,
+      icon: normalizedIcon,
+      features: normalizeStringArray(features ?? []),
+      technologies: normalizeStringArray(technologies ?? []),
+      featured: normalizedFeatured,
+      order: normalizedOrder,
+      status: normalizedStatus,
       createdAt: now,
-
       updatedAt: now,
     };
 
     const result = await collection.insertOne(service);
 
-    const createdService = await collection.findOne({
-      _id: result.insertedId,
-    });
-
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: "Service created successfully.",
-      data: createdService,
+      data: {
+        _id: result.insertedId,
+        ...service,
+      },
     });
   } catch (error) {
-    console.error("❌ Create service error:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to create service.",
-    });
+    return handleServiceError(res, error, "Create service");
   }
 });
 
 /* =========================================================
    UPDATE SERVICE
    PATCH /api/services/:id
+   Admin only
 ========================================================= */
 
-router.patch("/:id", async (req, res) => {
+router.patch("/:id", verifyToken, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
 
     if (!isValidObjectId(id)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid service ID.",
-      });
+      return sendValidationError(res, "Invalid service ID.");
+    }
+
+    if (!isPlainObject(req.body)) {
+      return sendValidationError(res, "A valid update object is required.");
     }
 
     const allowedFields = [
@@ -296,169 +408,155 @@ router.patch("/:id", async (req, res) => {
     }
 
     if (Object.keys(updates).length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "No valid fields provided for update.",
-      });
+      return sendValidationError(res, "No valid fields provided for update.");
     }
 
-    /* -----------------------------------------------------
-       STRING NORMALIZATION
-    ----------------------------------------------------- */
+    /* STRING FIELDS */
 
     if (updates.title !== undefined) {
-      if (typeof updates.title !== "string" || !updates.title.trim()) {
-        return res.status(400).json({
-          success: false,
-          message: "Service title must be a valid string.",
-        });
-      }
+      updates.title = normalizeString(updates.title);
 
-      updates.title = updates.title.trim();
+      if (!updates.title || updates.title.length > MAX_TITLE_LENGTH) {
+        return sendValidationError(
+          res,
+          `Title is required and cannot exceed ${MAX_TITLE_LENGTH} characters.`,
+        );
+      }
     }
 
     if (updates.slug !== undefined) {
-      if (typeof updates.slug !== "string" || !updates.slug.trim()) {
-        return res.status(400).json({
-          success: false,
-          message: "Service slug must be a valid string.",
-        });
-      }
+      updates.slug = normalizeSlug(updates.slug);
 
-      updates.slug = updates.slug.trim().toLowerCase().replace(/\s+/g, "-");
+      if (!isValidSlug(updates.slug)) {
+        return sendValidationError(
+          res,
+          "Slug must contain lowercase letters, numbers, and single hyphens only.",
+        );
+      }
     }
 
     if (updates.shortDescription !== undefined) {
-      if (
-        typeof updates.shortDescription !== "string" ||
-        !updates.shortDescription.trim()
-      ) {
-        return res.status(400).json({
-          success: false,
-          message: "Short description must be a valid string.",
-        });
-      }
+      updates.shortDescription = normalizeString(updates.shortDescription);
 
-      updates.shortDescription = updates.shortDescription.trim();
+      if (
+        !updates.shortDescription ||
+        updates.shortDescription.length > MAX_SHORT_DESCRIPTION_LENGTH
+      ) {
+        return sendValidationError(
+          res,
+          `Short description is required and cannot exceed ${MAX_SHORT_DESCRIPTION_LENGTH} characters.`,
+        );
+      }
     }
 
     if (updates.description !== undefined) {
-      if (
-        typeof updates.description !== "string" ||
-        !updates.description.trim()
-      ) {
-        return res.status(400).json({
-          success: false,
-          message: "Description must be a valid string.",
-        });
-      }
+      updates.description = normalizeString(updates.description);
 
-      updates.description = updates.description.trim();
+      if (
+        !updates.description ||
+        updates.description.length > MAX_DESCRIPTION_LENGTH
+      ) {
+        return sendValidationError(
+          res,
+          `Description is required and cannot exceed ${MAX_DESCRIPTION_LENGTH} characters.`,
+        );
+      }
     }
 
     if (updates.icon !== undefined) {
       if (typeof updates.icon !== "string") {
-        return res.status(400).json({
-          success: false,
-          message: "Icon must be a string.",
-        });
+        return sendValidationError(res, "Icon must be a string.");
       }
 
-      updates.icon = updates.icon.trim();
-    }
+      updates.icon = normalizeString(updates.icon);
 
-    /* -----------------------------------------------------
-       ARRAY VALIDATION
-    ----------------------------------------------------- */
-
-    if (updates.features !== undefined) {
-      if (!Array.isArray(updates.features)) {
-        return res.status(400).json({
-          success: false,
-          message: "Features must be an array.",
-        });
+      if (updates.icon.length > MAX_ICON_LENGTH) {
+        return sendValidationError(
+          res,
+          `Icon cannot exceed ${MAX_ICON_LENGTH} characters.`,
+        );
       }
-
-      updates.features = updates.features
-        .filter((item) => typeof item === "string")
-        .map((item) => item.trim())
-        .filter(Boolean);
     }
 
-    if (updates.technologies !== undefined) {
-      if (!Array.isArray(updates.technologies)) {
-        return res.status(400).json({
-          success: false,
-          message: "Technologies must be an array.",
-        });
+    /* ARRAY FIELDS */
+
+    for (const field of ["features", "technologies"]) {
+      if (updates[field] !== undefined) {
+        if (!validateStringArray(updates[field])) {
+          return sendValidationError(
+            res,
+            `${field} must be an array of valid strings.`,
+          );
+        }
+
+        updates[field] = normalizeStringArray(updates[field]);
       }
-
-      updates.technologies = updates.technologies
-        .filter((item) => typeof item === "string")
-        .map((item) => item.trim())
-        .filter(Boolean);
     }
 
-    /* -----------------------------------------------------
-       BOOLEAN
-    ----------------------------------------------------- */
+    /* BOOLEAN */
 
     if (updates.featured !== undefined) {
-      if (typeof updates.featured !== "boolean") {
-        return res.status(400).json({
-          success: false,
-          message: "Featured must be a boolean.",
-        });
+      const parsedFeatured = parseBoolean(updates.featured);
+
+      if (parsedFeatured === null) {
+        return sendValidationError(res, "Featured must be a boolean value.");
       }
+
+      updates.featured = parsedFeatured;
     }
 
-    /* -----------------------------------------------------
-       ORDER
-    ----------------------------------------------------- */
+    /* ORDER */
 
     if (updates.order !== undefined) {
-      const parsedOrder = Number(updates.order);
+      const parsedOrder = parseOrder(updates.order);
 
-      if (!Number.isFinite(parsedOrder)) {
-        return res.status(400).json({
-          success: false,
-          message: "Order must be a valid number.",
-        });
+      if (parsedOrder === null) {
+        return sendValidationError(
+          res,
+          "Order must be a non-negative safe integer.",
+        );
       }
 
       updates.order = parsedOrder;
     }
 
-    /* -----------------------------------------------------
-       STATUS
-    ----------------------------------------------------- */
+    /* STATUS */
 
-    if (updates.status !== undefined) {
-      const allowedStatuses = ["published", "draft", "archived"];
-
-      if (!allowedStatuses.includes(updates.status)) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid service status.",
-        });
-      }
+    if (
+      updates.status !== undefined &&
+      !ALLOWED_STATUS.includes(updates.status)
+    ) {
+      return sendValidationError(
+        res,
+        "Status must be published, draft, or archived.",
+      );
     }
 
-    /* -----------------------------------------------------
-       DUPLICATE SLUG CHECK
-    ----------------------------------------------------- */
+    /* CHECK EXISTING DOCUMENT */
 
     const collection = getServicesCollection();
+    const serviceId = new ObjectId(id);
 
-    if (updates.slug) {
-      const existingService = await collection.findOne({
+    const existingService = await collection.findOne({
+      _id: serviceId,
+    });
+
+    if (!existingService) {
+      return res.status(404).json({
+        success: false,
+        message: "Service not found.",
+      });
+    }
+
+    /* DUPLICATE SLUG CHECK */
+
+    if (updates.slug !== undefined && updates.slug !== existingService.slug) {
+      const duplicateService = await collection.findOne({
         slug: updates.slug,
-        _id: {
-          $ne: new ObjectId(id),
-        },
+        _id: { $ne: serviceId },
       });
 
-      if (existingService) {
+      if (duplicateService) {
         return res.status(409).json({
           success: false,
           message: "A service with this slug already exists.",
@@ -466,66 +564,41 @@ router.patch("/:id", async (req, res) => {
       }
     }
 
-    /* -----------------------------------------------------
-       UPDATE
-    ----------------------------------------------------- */
+    /* UPDATE DOCUMENT */
 
     updates.updatedAt = new Date();
 
-    const result = await collection.updateOne(
-      {
-        _id: new ObjectId(id),
-      },
-      {
-        $set: updates,
-      },
-    );
-
-    if (result.matchedCount === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Service not found.",
-      });
-    }
+    await collection.updateOne({ _id: serviceId }, { $set: updates });
 
     const updatedService = await collection.findOne({
-      _id: new ObjectId(id),
+      _id: serviceId,
     });
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: "Service updated successfully.",
       data: updatedService,
     });
   } catch (error) {
-    console.error("❌ Update service error:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to update service.",
-    });
+    return handleServiceError(res, error, "Update service");
   }
 });
 
 /* =========================================================
    DELETE SERVICE
    DELETE /api/services/:id
+   Admin only
 ========================================================= */
 
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", verifyToken, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
 
     if (!isValidObjectId(id)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid service ID.",
-      });
+      return sendValidationError(res, "Invalid service ID.");
     }
 
-    const collection = getServicesCollection();
-
-    const result = await collection.deleteOne({
+    const result = await getServicesCollection().deleteOne({
       _id: new ObjectId(id),
     });
 
@@ -536,7 +609,7 @@ router.delete("/:id", async (req, res) => {
       });
     }
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: "Service deleted successfully.",
       data: {
@@ -544,12 +617,7 @@ router.delete("/:id", async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("❌ Delete service error:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to delete service.",
-    });
+    return handleServiceError(res, error, "Delete service");
   }
 });
 

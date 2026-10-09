@@ -2,16 +2,21 @@ import express from "express";
 import { ObjectId } from "mongodb";
 
 import { getDB } from "../config/db.js";
+import verifyToken from "../middleware/verifyToken.js";
+import requireAdmin from "../middleware/requireAdmin.js";
 
 const router = express.Router();
 
-/* =========================================================
-   CONSTANTS
-========================================================= */
-
 const COLLECTION_NAME = "projects";
-
 const ALLOWED_STATUS = ["draft", "published"];
+
+const MAX_TITLE_LENGTH = 150;
+const MAX_SLUG_LENGTH = 160;
+const MAX_SHORT_DESCRIPTION_LENGTH = 300;
+const MAX_DESCRIPTION_LENGTH = 20000;
+const MAX_URL_LENGTH = 2048;
+const MAX_ARRAY_ITEMS = 50;
+const MAX_ARRAY_ITEM_LENGTH = 200;
 
 /* =========================================================
    COLLECTION
@@ -26,51 +31,141 @@ const getProjectsCollection = () => {
 ========================================================= */
 
 const normalizeString = (value) => {
-  if (typeof value !== "string") {
-    return "";
-  }
-
-  return value.trim();
+  return typeof value === "string" ? value.trim() : "";
 };
 
 const normalizeSlug = (value) => {
   return normalizeString(value).toLowerCase();
 };
 
-const normalizeStringArray = (value) => {
-  if (!Array.isArray(value)) {
-    return [];
+const isValidSlug = (value) => {
+  return (
+    typeof value === "string" &&
+    value.length <= MAX_SLUG_LENGTH &&
+    /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value)
+  );
+};
+
+const isValidObjectId = (value) => {
+  return (
+    typeof value === "string" &&
+    /^[a-fA-F0-9]{24}$/.test(value) &&
+    ObjectId.isValid(value)
+  );
+};
+
+const isValidHttpUrl = (value) => {
+  if (typeof value !== "string" || value.length > MAX_URL_LENGTH) {
+    return false;
   }
 
-  return value
-    .filter((item) => typeof item === "string")
-    .map((item) => item.trim())
-    .filter(Boolean);
+  try {
+    const url = new URL(value);
+
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+};
+
+const isValidImageValue = (value) => {
+  if (!value) {
+    return true;
+  }
+
+  if (isValidHttpUrl(value)) {
+    return true;
+  }
+
+  // Permit root-relative public image paths, but not protocol-relative URLs.
+  return (
+    typeof value === "string" &&
+    value.startsWith("/") &&
+    !value.startsWith("//") &&
+    !value.includes("\\") &&
+    !/[\s\\]/.test(value) &&
+    !/[\u0000-\u001F]/.test(value)
+  );
+};
+
+const normalizeStringArray = (value) => {
+  return value.map((item) => item.trim()).filter(Boolean);
+};
+
+const validateStringArray = (value) => {
+  return (
+    Array.isArray(value) &&
+    value.length <= MAX_ARRAY_ITEMS &&
+    value.every(
+      (item) =>
+        typeof item === "string" && item.trim().length <= MAX_ARRAY_ITEM_LENGTH,
+    )
+  );
 };
 
 const parseOrder = (value) => {
-  const number = Number(value);
+  if (
+    typeof value !== "number" &&
+    !(typeof value === "string" && value.trim() !== "")
+  ) {
+    return null;
+  }
 
-  return Number.isFinite(number) ? number : 0;
+  const parsed = Number(value);
+
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    return null;
+  }
+
+  return parsed;
+};
+
+const parseBoolean = (value) => {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  return null;
+};
+
+const isPlainObject = (value) => {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+};
+
+const sendValidationError = (res, message) => {
+  return res.status(400).json({
+    success: false,
+    message,
+  });
+};
+
+const handleProjectError = (res, error, operation) => {
+  console.error(`❌ ${operation} error:`, error);
+
+  if (error?.code === 11000) {
+    return res.status(409).json({
+      success: false,
+      message: "A project with this slug already exists.",
+    });
+  }
+
+  return res.status(500).json({
+    success: false,
+    message: `Failed to ${operation.toLowerCase()}.`,
+  });
 };
 
 /* =========================================================
-   GET ALL PROJECTS
+   GET ALL PUBLISHED PROJECTS
    GET /api/projects
+   Public route
 ========================================================= */
 
 router.get("/", async (req, res) => {
   try {
-    const collection = getProjectsCollection();
-
-    const projects = await collection
-      .find({
-        status: "published",
-      })
-      .sort({
-        order: 1,
-        createdAt: -1,
-      })
+    const projects = await getProjectsCollection()
+      .find({ status: "published" })
+      .sort({ order: 1, createdAt: -1 })
       .toArray();
 
     return res.status(200).json({
@@ -79,29 +174,22 @@ router.get("/", async (req, res) => {
       data: projects,
     });
   } catch (error) {
-    console.error("❌ Get projects error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch projects.",
-    });
+    return handleProjectError(res, error, "Fetch projects");
   }
 });
 
 /* =========================================================
-   GET SINGLE PROJECT
+   GET SINGLE PUBLISHED PROJECT
    GET /api/projects/:id
+   Public route
 ========================================================= */
 
 router.get("/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid project ID.",
-      });
+    if (!isValidObjectId(id)) {
+      return sendValidationError(res, "Invalid project ID.");
     }
 
     const project = await getProjectsCollection().findOne({
@@ -122,22 +210,22 @@ router.get("/:id", async (req, res) => {
       data: project,
     });
   } catch (error) {
-    console.error("❌ Get project error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch project.",
-    });
+    return handleProjectError(res, error, "Fetch project");
   }
 });
 
 /* =========================================================
    CREATE PROJECT
    POST /api/projects
+   Admin only
 ========================================================= */
 
-router.post("/", async (req, res) => {
+router.post("/", verifyToken, requireAdmin, async (req, res) => {
   try {
+    if (!isPlainObject(req.body)) {
+      return sendValidationError(res, "A valid project object is required.");
+    }
+
     const {
       title,
       slug,
@@ -155,10 +243,6 @@ router.post("/", async (req, res) => {
       status,
     } = req.body;
 
-    /* -----------------------------------------------------
-       REQUIRED FIELDS
-    ----------------------------------------------------- */
-
     const normalizedTitle = normalizeString(title);
     const normalizedSlug = normalizeSlug(slug);
     const normalizedShortDescription = normalizeString(shortDescription);
@@ -170,21 +254,117 @@ router.post("/", async (req, res) => {
       !normalizedShortDescription ||
       !normalizedDescription
     ) {
-      return res.status(400).json({
-        success: false,
-        message: "Title, slug, shortDescription, and description are required.",
-      });
+      return sendValidationError(
+        res,
+        "Title, slug, shortDescription, and description are required.",
+      );
     }
 
-    /* -----------------------------------------------------
-       STATUS
-    ----------------------------------------------------- */
+    if (normalizedTitle.length > MAX_TITLE_LENGTH) {
+      return sendValidationError(
+        res,
+        `Title cannot exceed ${MAX_TITLE_LENGTH} characters.`,
+      );
+    }
 
-    const normalizedStatus = status === "draft" ? "draft" : "published";
+    if (!isValidSlug(normalizedSlug)) {
+      return sendValidationError(
+        res,
+        "Slug must contain lowercase letters, numbers, and single hyphens only.",
+      );
+    }
 
-    /* -----------------------------------------------------
-       DUPLICATE SLUG CHECK
-    ----------------------------------------------------- */
+    if (normalizedShortDescription.length > MAX_SHORT_DESCRIPTION_LENGTH) {
+      return sendValidationError(
+        res,
+        `Short description cannot exceed ${MAX_SHORT_DESCRIPTION_LENGTH} characters.`,
+      );
+    }
+
+    if (normalizedDescription.length > MAX_DESCRIPTION_LENGTH) {
+      return sendValidationError(
+        res,
+        `Description cannot exceed ${MAX_DESCRIPTION_LENGTH} characters.`,
+      );
+    }
+
+    const normalizedImage = normalizeString(image);
+    const normalizedCategory = normalizeString(category) || "Web Development";
+    const normalizedLiveUrl = normalizeString(liveUrl);
+    const normalizedGithubClient = normalizeString(githubClient);
+    const normalizedGithubServer = normalizeString(githubServer);
+
+    if (typeof image !== "undefined" && typeof image !== "string") {
+      return sendValidationError(res, "Image must be a string.");
+    }
+
+    if (!isValidImageValue(normalizedImage)) {
+      return sendValidationError(
+        res,
+        "Image must be a valid HTTP/HTTPS URL or root-relative path.",
+      );
+    }
+
+    if (normalizedCategory.length > 100) {
+      return sendValidationError(res, "Category cannot exceed 100 characters.");
+    }
+
+    for (const [field, value] of [
+      ["liveUrl", normalizedLiveUrl],
+      ["githubClient", normalizedGithubClient],
+      ["githubServer", normalizedGithubServer],
+    ]) {
+      if (value && !isValidHttpUrl(value)) {
+        return sendValidationError(
+          res,
+          `${field} must be a valid HTTP or HTTPS URL.`,
+        );
+      }
+    }
+
+    if (
+      typeof technologies !== "undefined" &&
+      !validateStringArray(technologies)
+    ) {
+      return sendValidationError(
+        res,
+        "Technologies must be an array of valid strings.",
+      );
+    }
+
+    if (typeof features !== "undefined" && !validateStringArray(features)) {
+      return sendValidationError(
+        res,
+        "Features must be an array of valid strings.",
+      );
+    }
+
+    const normalizedFeatured =
+      typeof featured === "undefined" ? false : parseBoolean(featured);
+
+    if (normalizedFeatured === null) {
+      return sendValidationError(res, "Featured must be a boolean value.");
+    }
+
+    const normalizedOrder =
+      typeof order === "undefined" ? 0 : parseOrder(order);
+
+    if (normalizedOrder === null) {
+      return sendValidationError(
+        res,
+        "Order must be a non-negative safe integer.",
+      );
+    }
+
+    const normalizedStatus =
+      typeof status === "undefined" ? "published" : status;
+
+    if (!ALLOWED_STATUS.includes(normalizedStatus)) {
+      return sendValidationError(
+        res,
+        "Status must be either draft or published.",
+      );
+    }
 
     const collection = getProjectsCollection();
 
@@ -199,103 +379,59 @@ router.post("/", async (req, res) => {
       });
     }
 
-    /* -----------------------------------------------------
-       PROJECT DOCUMENT
-    ----------------------------------------------------- */
-
     const now = new Date();
 
     const project = {
       title: normalizedTitle,
-
       slug: normalizedSlug,
-
       shortDescription: normalizedShortDescription,
-
       description: normalizedDescription,
-
-      image: normalizeString(image),
-
-      category: normalizeString(category) || "Web Development",
-
-      technologies: normalizeStringArray(technologies),
-
-      features: normalizeStringArray(features),
-
-      liveUrl: normalizeString(liveUrl),
-
-      githubClient: normalizeString(githubClient),
-
-      githubServer: normalizeString(githubServer),
-
-      featured: Boolean(featured),
-
-      order: parseOrder(order),
-
+      image: normalizedImage,
+      category: normalizedCategory,
+      technologies: normalizeStringArray(technologies ?? []),
+      features: normalizeStringArray(features ?? []),
+      liveUrl: normalizedLiveUrl,
+      githubClient: normalizedGithubClient,
+      githubServer: normalizedGithubServer,
+      featured: normalizedFeatured,
+      order: normalizedOrder,
       status: normalizedStatus,
-
       createdAt: now,
-
       updatedAt: now,
     };
 
-    /* -----------------------------------------------------
-       INSERT
-    ----------------------------------------------------- */
-
     const result = await collection.insertOne(project);
-
-    const createdProject = {
-      _id: result.insertedId,
-      ...project,
-    };
 
     return res.status(201).json({
       success: true,
       message: "Project created successfully.",
-      data: createdProject,
+      data: {
+        _id: result.insertedId,
+        ...project,
+      },
     });
   } catch (error) {
-    console.error("❌ Create project error:", error);
-
-    /* MongoDB duplicate key */
-    if (error?.code === 11000) {
-      return res.status(409).json({
-        success: false,
-        message: "A project with this slug already exists.",
-      });
-    }
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed to create project.",
-    });
+    return handleProjectError(res, error, "Create project");
   }
 });
 
 /* =========================================================
    UPDATE PROJECT
    PATCH /api/projects/:id
+   Admin only
 ========================================================= */
 
-router.patch("/:id", async (req, res) => {
+router.patch("/:id", verifyToken, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
 
-    /* -----------------------------------------------------
-       VALIDATE ID
-    ----------------------------------------------------- */
-
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid project ID.",
-      });
+    if (!isValidObjectId(id)) {
+      return sendValidationError(res, "Invalid project ID.");
     }
 
-    /* -----------------------------------------------------
-       ALLOWED FIELDS
-    ----------------------------------------------------- */
+    if (!isPlainObject(req.body)) {
+      return sendValidationError(res, "A valid update object is required.");
+    }
 
     const allowedFields = [
       "title",
@@ -322,54 +458,29 @@ router.patch("/:id", async (req, res) => {
       }
     }
 
-    /* -----------------------------------------------------
-       EMPTY UPDATE
-    ----------------------------------------------------- */
-
     if (Object.keys(updateData).length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "No valid fields provided for update.",
-      });
+      return sendValidationError(res, "No valid fields provided for update.");
     }
-
-    /* -----------------------------------------------------
-       STRING FIELDS
-    ----------------------------------------------------- */
 
     if (updateData.title !== undefined) {
       updateData.title = normalizeString(updateData.title);
 
-      if (!updateData.title) {
-        return res.status(400).json({
-          success: false,
-          message: "Title cannot be empty.",
-        });
+      if (!updateData.title || updateData.title.length > MAX_TITLE_LENGTH) {
+        return sendValidationError(
+          res,
+          `Title is required and cannot exceed ${MAX_TITLE_LENGTH} characters.`,
+        );
       }
     }
 
     if (updateData.slug !== undefined) {
       updateData.slug = normalizeSlug(updateData.slug);
 
-      if (!updateData.slug) {
-        return res.status(400).json({
-          success: false,
-          message: "Slug cannot be empty.",
-        });
-      }
-
-      const existingProject = await getProjectsCollection().findOne({
-        slug: updateData.slug,
-        _id: {
-          $ne: new ObjectId(id),
-        },
-      });
-
-      if (existingProject) {
-        return res.status(409).json({
-          success: false,
-          message: "A project with this slug already exists.",
-        });
+      if (!isValidSlug(updateData.slug)) {
+        return sendValidationError(
+          res,
+          "Slug must contain lowercase letters, numbers, and single hyphens only.",
+        );
       }
     }
 
@@ -378,189 +489,187 @@ router.patch("/:id", async (req, res) => {
         updateData.shortDescription,
       );
 
-      if (!updateData.shortDescription) {
-        return res.status(400).json({
-          success: false,
-          message: "Short description cannot be empty.",
-        });
+      if (
+        !updateData.shortDescription ||
+        updateData.shortDescription.length > MAX_SHORT_DESCRIPTION_LENGTH
+      ) {
+        return sendValidationError(
+          res,
+          `Short description is required and cannot exceed ${MAX_SHORT_DESCRIPTION_LENGTH} characters.`,
+        );
       }
     }
 
     if (updateData.description !== undefined) {
       updateData.description = normalizeString(updateData.description);
 
-      if (!updateData.description) {
-        return res.status(400).json({
-          success: false,
-          message: "Description cannot be empty.",
-        });
+      if (
+        !updateData.description ||
+        updateData.description.length > MAX_DESCRIPTION_LENGTH
+      ) {
+        return sendValidationError(
+          res,
+          `Description is required and cannot exceed ${MAX_DESCRIPTION_LENGTH} characters.`,
+        );
       }
     }
 
     if (updateData.image !== undefined) {
+      if (typeof updateData.image !== "string") {
+        return sendValidationError(res, "Image must be a string.");
+      }
+
       updateData.image = normalizeString(updateData.image);
+
+      if (!isValidImageValue(updateData.image)) {
+        return sendValidationError(
+          res,
+          "Image must be a valid HTTP/HTTPS URL or root-relative path.",
+        );
+      }
     }
 
     if (updateData.category !== undefined) {
-      updateData.category = normalizeString(updateData.category);
+      if (typeof updateData.category !== "string") {
+        return sendValidationError(res, "Category must be a string.");
+      }
 
-      if (!updateData.category) {
-        updateData.category = "Web Development";
+      updateData.category =
+        normalizeString(updateData.category) || "Web Development";
+
+      if (updateData.category.length > 100) {
+        return sendValidationError(
+          res,
+          "Category cannot exceed 100 characters.",
+        );
       }
     }
 
-    if (updateData.liveUrl !== undefined) {
-      updateData.liveUrl = normalizeString(updateData.liveUrl);
-    }
+    for (const field of ["liveUrl", "githubClient", "githubServer"]) {
+      if (updateData[field] !== undefined) {
+        if (typeof updateData[field] !== "string") {
+          return sendValidationError(res, `${field} must be a string.`);
+        }
 
-    if (updateData.githubClient !== undefined) {
-      updateData.githubClient = normalizeString(updateData.githubClient);
-    }
+        updateData[field] = normalizeString(updateData[field]);
 
-    if (updateData.githubServer !== undefined) {
-      updateData.githubServer = normalizeString(updateData.githubServer);
-    }
-
-    /* -----------------------------------------------------
-       ARRAY FIELDS
-    ----------------------------------------------------- */
-
-    if (updateData.technologies !== undefined) {
-      if (!Array.isArray(updateData.technologies)) {
-        return res.status(400).json({
-          success: false,
-          message: "Technologies must be an array.",
-        });
+        if (updateData[field] && !isValidHttpUrl(updateData[field])) {
+          return sendValidationError(
+            res,
+            `${field} must be a valid HTTP or HTTPS URL.`,
+          );
+        }
       }
-
-      updateData.technologies = normalizeStringArray(updateData.technologies);
     }
 
-    if (updateData.features !== undefined) {
-      if (!Array.isArray(updateData.features)) {
-        return res.status(400).json({
-          success: false,
-          message: "Features must be an array.",
-        });
+    for (const field of ["technologies", "features"]) {
+      if (updateData[field] !== undefined) {
+        if (!validateStringArray(updateData[field])) {
+          return sendValidationError(
+            res,
+            `${field} must be an array of valid strings.`,
+          );
+        }
+
+        updateData[field] = normalizeStringArray(updateData[field]);
       }
-
-      updateData.features = normalizeStringArray(updateData.features);
     }
-
-    /* -----------------------------------------------------
-       BOOLEAN FIELD
-    ----------------------------------------------------- */
 
     if (updateData.featured !== undefined) {
-      updateData.featured = Boolean(updateData.featured);
+      const parsedFeatured = parseBoolean(updateData.featured);
+
+      if (parsedFeatured === null) {
+        return sendValidationError(res, "Featured must be a boolean value.");
+      }
+
+      updateData.featured = parsedFeatured;
     }
 
-    /* -----------------------------------------------------
-       ORDER
-    ----------------------------------------------------- */
-
     if (updateData.order !== undefined) {
-      const parsedOrder = Number(updateData.order);
+      const parsedOrder = parseOrder(updateData.order);
 
-      if (!Number.isFinite(parsedOrder)) {
-        return res.status(400).json({
-          success: false,
-          message: "Order must be a valid number.",
-        });
+      if (parsedOrder === null) {
+        return sendValidationError(
+          res,
+          "Order must be a non-negative safe integer.",
+        );
       }
 
       updateData.order = parsedOrder;
     }
 
-    /* -----------------------------------------------------
-       STATUS
-    ----------------------------------------------------- */
-
-    if (updateData.status !== undefined) {
-      if (!ALLOWED_STATUS.includes(updateData.status)) {
-        return res.status(400).json({
-          success: false,
-          message: "Status must be either draft or published.",
-        });
-      }
+    if (
+      updateData.status !== undefined &&
+      !ALLOWED_STATUS.includes(updateData.status)
+    ) {
+      return sendValidationError(
+        res,
+        "Status must be either draft or published.",
+      );
     }
 
-    /* -----------------------------------------------------
-       UPDATED TIMESTAMP
-    ----------------------------------------------------- */
-
-    updateData.updatedAt = new Date();
-
-    /* -----------------------------------------------------
-       UPDATE
-    ----------------------------------------------------- */
-
     const collection = getProjectsCollection();
+    const projectId = new ObjectId(id);
 
-    const result = await collection.findOneAndUpdate(
-      {
-        _id: new ObjectId(id),
-      },
-      {
-        $set: updateData,
-      },
-      {
-        returnDocument: "after",
-      },
-    );
+    const existingProject = await collection.findOne({
+      _id: projectId,
+    });
 
-    if (!result) {
+    if (!existingProject) {
       return res.status(404).json({
         success: false,
         message: "Project not found.",
       });
     }
 
+    if (
+      updateData.slug !== undefined &&
+      updateData.slug !== existingProject.slug
+    ) {
+      const duplicateSlug = await collection.findOne({
+        slug: updateData.slug,
+        _id: { $ne: projectId },
+      });
+
+      if (duplicateSlug) {
+        return res.status(409).json({
+          success: false,
+          message: "A project with this slug already exists.",
+        });
+      }
+    }
+
+    updateData.updatedAt = new Date();
+
+    await collection.updateOne({ _id: projectId }, { $set: updateData });
+
+    const updatedProject = await collection.findOne({
+      _id: projectId,
+    });
+
     return res.status(200).json({
       success: true,
       message: "Project updated successfully.",
-      data: result,
+      data: updatedProject,
     });
   } catch (error) {
-    console.error("❌ Update project error:", error);
-
-    if (error?.code === 11000) {
-      return res.status(409).json({
-        success: false,
-        message: "A project with this slug already exists.",
-      });
-    }
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed to update project.",
-    });
+    return handleProjectError(res, error, "Update project");
   }
 });
 
 /* =========================================================
    DELETE PROJECT
    DELETE /api/projects/:id
+   Admin only
 ========================================================= */
 
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", verifyToken, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
 
-    /* -----------------------------------------------------
-       VALIDATE ID
-    ----------------------------------------------------- */
-
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid project ID.",
-      });
+    if (!isValidObjectId(id)) {
+      return sendValidationError(res, "Invalid project ID.");
     }
-
-    /* -----------------------------------------------------
-       DELETE
-    ----------------------------------------------------- */
 
     const result = await getProjectsCollection().deleteOne({
       _id: new ObjectId(id),
@@ -578,17 +687,8 @@ router.delete("/:id", async (req, res) => {
       message: "Project deleted successfully.",
     });
   } catch (error) {
-    console.error("❌ Delete project error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed to delete project.",
-    });
+    return handleProjectError(res, error, "Delete project");
   }
 });
-
-/* =========================================================
-   EXPORT ROUTER
-========================================================= */
 
 export default router;
