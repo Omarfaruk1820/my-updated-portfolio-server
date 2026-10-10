@@ -48,9 +48,10 @@ const projects = [
     description:
       "A responsive e-commerce website for browsing and purchasing biscuit products with a clean and user-friendly shopping experience.",
 
-    image: "https://i.ibb.co.com/tPWpkxPb/he-junhui-r-SGjpaj-BLNU-unsplash.jpg",
+    image: "https://i.ibb.co.com/DPGwD2zw/julissa-capdevilla-t-Do-Hiq-Xl9b8-unsplash.jpg",
 
     category: "E-Commerce",
+
 
     featured: true,
 
@@ -91,7 +92,7 @@ const projects = [
     description:
       "A responsive school reunion platform designed to provide users with an organized and engaging experience for connecting and participating in reunion activities.",
 
-    image: "",
+    image: "https://i.ibb.co.com/5XdCdswh/hasan-almasi-X2-UAm-Icpko-unsplash.jpg",
 
     category: "Web Application",
 
@@ -132,7 +133,7 @@ const projects = [
     description:
       "A full-stack smartphone e-commerce platform designed with a responsive interface and organized product management experience.",
 
-    image: "",
+    image: "https://i.ibb.co.com/tPWpkxPb/he-junhui-r-SGjpaj-BLNU-unsplash.jpg",
 
     category: "E-Commerce",
 
@@ -179,7 +180,7 @@ const projects = [
     description:
       "An online event management platform designed to help users manage and interact with events through a responsive and organized web application.",
 
-    image: "",
+    image: "https://i.ibb.co.com/NxHBD5s/pexels-pixabay-265722.jpg",
 
     category: "Event Management",
 
@@ -216,7 +217,7 @@ const projects = [
     description:
       "A responsive online news portal designed for publishing, browsing, and organizing news content through a modern web interface.",
 
-    image: "",
+    image: "https://i.ibb.co.com/fX8gjb2/editors-Insight2.png",
 
     category: "News / Web Application",
 
